@@ -35,8 +35,11 @@ var sender = Task.Run(async () =>
 
         await foreach (var payload in sendQueue.Reader.ReadAllAsync(cts.Token))
         {
-            // 4バイトのメッセージ長（Big-Endian）
-            BinaryPrimitives.WriteInt32BigEndian(lenBuf.AsSpan(), payload.Length);
+            //// 4バイトのメッセージ長（Big-Endian）
+            //BinaryPrimitives.WriteInt32BigEndian(lenBuf.AsSpan(), payload.Length);
+
+            // 4バイトのメッセージ長（Little-Endian）
+            BinaryPrimitives.WriteInt32LittleEndian(lenBuf.AsSpan(), payload.Length);
 
             // 配列オーバーロードを使う（Span を await またがせない）
             await ns.WriteAsync(lenBuf, 0, 4, cts.Token);

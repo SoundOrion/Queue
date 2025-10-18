@@ -63,7 +63,9 @@ static async Task HandleClientAsync(TcpClient client, CancellationToken ct)
                     break;
                 }
 
-                int len = BinaryPrimitives.ReadInt32BigEndian(lenBuf);
+                //int len = BinaryPrimitives.ReadInt32BigEndian(lenBuf);
+                int len = BinaryPrimitives.ReadInt32LittleEndian(lenBuf);
+
                 if (len <= 0 || len > 100_000_000) // 簡易上限
                     throw new InvalidDataException($"Invalid payload length: {len}");
 
