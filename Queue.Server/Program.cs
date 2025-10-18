@@ -1,7 +1,10 @@
-﻿using System.Net;
+﻿using System.Buffers.Binary;
+using System.IO.Compression;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.IO.Compression;
+
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -10,42 +13,80 @@ var listener = new TcpListener(IPAddress.Any, 5000);
 listener.Start();
 Console.WriteLine("Server: listening on 0.0.0.0:5000 ...");
 
-using var client = await listener.AcceptTcpClientAsync(cts.Token);
-Console.WriteLine("Server: client connected.");
-using var ns = client.GetStream();
-
-// 受信ループ： [length(4byte, little-endian)] + [payload(圧縮後)]
-var lenBuf = new byte[4];
-while (!cts.IsCancellationRequested)
+try
 {
-    // 4バイト（長さ）を正確に読む
-    if (!await ReadExactAsync(ns, lenBuf, 4, cts.Token))
+    var handlers = new List<Task>();
+
+    while (!cts.IsCancellationRequested)
     {
-        Console.WriteLine("Server: client closed.");
-        break;
+        // 複数クライアント対応
+        var client = await listener.AcceptTcpClientAsync(cts.Token);
+        Console.WriteLine("Server: client connected.");
+        handlers.Add(Task.Run(() => HandleClientAsync(client, cts.Token)));
     }
 
-    int len = BitConverter.ToInt32(lenBuf, 0);
-    if (len <= 0 || len > 100_000_000) // 簡易上限チェック
-        throw new InvalidDataException($"Invalid payload length: {len}");
-
-    var payload = new byte[len];
-    if (!await ReadExactAsync(ns, payload, len, cts.Token))
-    {
-        Console.WriteLine("Server: client closed during payload.");
-        break;
-    }
-
-    // 受信payloadは「圧縮後のバイト列」
-    var decompressed = DecompressDeflate(payload); // ← Deflate 解凍（GZipに替えるなら DecompressGZip）
-    var text = Encoding.GetEncoding("shift_jis").GetString(decompressed);
-    Console.WriteLine($"[RECV] {text}");
+    await Task.WhenAll(handlers);
+}
+catch (OperationCanceledException)
+{
+    Console.WriteLine("Server: canceled.");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Server: error {ex.Message}");
+}
+finally
+{
+    listener.Stop();
+    Console.WriteLine("Server: stopped.");
 }
 
-listener.Stop();
-Console.WriteLine("Server: stopped.");
+static async Task HandleClientAsync(TcpClient client, CancellationToken ct)
+{
+    client.ReceiveTimeout = 30000;
+    client.SendTimeout = 30000;
 
-// ---- helpers ----
+    using (client)
+    using (var ns = client.GetStream())
+    {
+        var lenBuf = new byte[4];
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // メッセージ長（4バイト・Big-Endian）
+                if (!await ReadExactAsync(ns, lenBuf, 4, ct))
+                {
+                    Console.WriteLine("Server: client closed.");
+                    break;
+                }
+
+                int len = BinaryPrimitives.ReadInt32BigEndian(lenBuf);
+                if (len <= 0 || len > 100_000_000) // 簡易上限
+                    throw new InvalidDataException($"Invalid payload length: {len}");
+
+                var payload = new byte[len];
+                if (!await ReadExactAsync(ns, payload, len, ct))
+                {
+                    Console.WriteLine("Server: client closed during payload.");
+                    break;
+                }
+
+                // 受信payloadは「圧縮後のバイト列」(Deflate想定)
+                var decompressed = DecompressDeflate(payload);
+                var text = Encoding.GetEncoding("shift_jis").GetString(decompressed);
+                Console.WriteLine($"[RECV] {text}");
+            }
+        }
+        catch (OperationCanceledException) { /* graceful */ }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Server: client handler error {ex.Message}");
+        }
+    }
+}
+
 static async Task<bool> ReadExactAsync(NetworkStream ns, byte[] buffer, int count, CancellationToken ct)
 {
     int off = 0;
@@ -67,7 +108,7 @@ static byte[] DecompressDeflate(byte[] compressed)
     return output.ToArray();
 }
 
-// GZip版が良ければこちら
+// GZip版が良ければこちら（クライアント側も合わせて変更すること）
 /*
 static byte[] DecompressGZip(byte[] compressed)
 {
