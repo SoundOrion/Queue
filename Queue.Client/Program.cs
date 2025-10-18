@@ -4,8 +4,6 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 
-Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
@@ -58,9 +56,9 @@ var sender = Task.Run(async () =>
 }, cts.Token);
 
 // ---- 送信例（Shift_JIS → Deflate圧縮） ----
-await sendQueue.Writer.WriteAsync(CompressDeflate(Encoding.GetEncoding("shift_jis").GetBytes("こんにちは、サーバー！")), cts.Token);
-await sendQueue.Writer.WriteAsync(CompressDeflate(Encoding.GetEncoding("shift_jis").GetBytes("圧縮して送るよ（Deflate）")), cts.Token);
-await sendQueue.Writer.WriteAsync(CompressDeflate(Encoding.GetEncoding("shift_jis").GetBytes("最後のメッセージです。")), cts.Token);
+await EnqueueTextAsync("こんにちは、サーバー！", sendQueue, cts.Token);
+await EnqueueTextAsync("圧縮して送るよ（Deflate）", sendQueue, cts.Token);
+await EnqueueTextAsync("最後のメッセージです。", sendQueue, cts.Token);
 
 // 完了
 sendQueue.Writer.TryComplete();
@@ -69,6 +67,14 @@ await sender;
 Console.WriteLine("Client: done.");
 
 // ---- helpers ----
+static async Task EnqueueTextAsync(string text, Channel<byte[]> queue, CancellationToken ct)
+{
+    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    var sjis = Encoding.GetEncoding("shift_jis").GetBytes(text);
+    var compressed = CompressDeflate(sjis); // ← Deflate圧縮（GZipに替えるなら CompressGZip）
+    await queue.Writer.WriteAsync(compressed, ct);
+}
+
 static byte[] CompressDeflate(byte[] data)
 {
     using var output = new MemoryStream();

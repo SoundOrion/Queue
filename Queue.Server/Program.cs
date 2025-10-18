@@ -3,8 +3,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-
-Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+using System.Threading.Channels;
 
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -74,8 +73,7 @@ static async Task HandleClientAsync(TcpClient client, CancellationToken ct)
                 }
 
                 // 受信payloadは「圧縮後のバイト列」(Deflate想定)
-                var decompressed = DecompressDeflate(payload);
-                var text = Encoding.GetEncoding("shift_jis").GetString(decompressed);
+                var text = DecompressText(payload);
                 Console.WriteLine($"[RECV] {text}");
             }
         }
@@ -85,6 +83,15 @@ static async Task HandleClientAsync(TcpClient client, CancellationToken ct)
             Console.WriteLine($"Server: client handler error {ex.Message}");
         }
     }
+}
+
+// ---- helpers ----
+static string DecompressText(byte[] payload)
+{
+    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    var decompressed = DecompressDeflate(payload);
+    var text = Encoding.GetEncoding("shift_jis").GetString(decompressed);
+    return text;
 }
 
 static async Task<bool> ReadExactAsync(NetworkStream ns, byte[] buffer, int count, CancellationToken ct)
