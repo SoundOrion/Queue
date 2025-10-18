@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
@@ -69,7 +71,6 @@ Console.WriteLine("Client: done.");
 // ---- helpers ----
 static async Task EnqueueTextAsync(string text, Channel<byte[]> queue, CancellationToken ct)
 {
-    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     var sjis = Encoding.GetEncoding("shift_jis").GetBytes(text);
     var compressed = CompressDeflate(sjis); // ← Deflate圧縮（GZipに替えるなら CompressGZip）
     await queue.Writer.WriteAsync(compressed, ct);

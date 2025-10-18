@@ -5,6 +5,8 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 
+Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
@@ -88,7 +90,6 @@ static async Task HandleClientAsync(TcpClient client, CancellationToken ct)
 // ---- helpers ----
 static string DecompressText(byte[] payload)
 {
-    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     var decompressed = DecompressDeflate(payload);
     var text = Encoding.GetEncoding("shift_jis").GetString(decompressed);
     return text;
