@@ -108,3 +108,31 @@ public sealed class BoundedReadStream : Stream
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
+public enum CompressionMethod : byte
+{
+    Raw = 0, // 圧縮なし
+    Brotli = 1, // BrotliStream
+    GZip = 2, // GZipStream
+    Deflate = 3, // DeflateStream
+}
+
+public static class CompressionStream
+{
+    public static Stream Create(Stream baseStream, CompressionMethod method, CompressionLevel level)
+        => method switch
+        {
+            CompressionMethod.Brotli => new BrotliStream(baseStream, level, leaveOpen: true),
+            CompressionMethod.GZip => new GZipStream(baseStream, level, leaveOpen: true),
+            CompressionMethod.Deflate => new DeflateStream(baseStream, level, leaveOpen: true),
+            _ => baseStream
+        };
+
+    public static Stream Open(Stream baseStream, CompressionMethod method)
+        => method switch
+        {
+            CompressionMethod.Brotli => new BrotliStream(baseStream, CompressionMode.Decompress, leaveOpen: true),
+            CompressionMethod.GZip => new GZipStream(baseStream, CompressionMode.Decompress, leaveOpen: true),
+            CompressionMethod.Deflate => new DeflateStream(baseStream, CompressionMode.Decompress, leaveOpen: true),
+            _ => baseStream
+        };
+}
