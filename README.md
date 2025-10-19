@@ -183,4 +183,168 @@ var payload = new byte[len];
 await ReadExactAsync(ns, payload, 0, len, ct);
 ```
 
+# 📦 メッセージ送信方式の比較（BinaryPrimitives / BitConverter / Socket）
 
+共通フォーマット：
+
+```
+[length: 4 bytes (Little Endian)] [payload: variable length bytes]
+```
+
+受信側は「先に4バイトで長さを読み、その長さ分のデータを読む」だけです。
+いずれの方法も **ネットワーク上のデータ内容は完全に同一** になります。
+
+---
+
+## 1️⃣ BinaryPrimitives × 2回 Write（推奨）
+
+```csharp
+using System.Buffers.Binary;
+
+public static async Task Send_BinaryPrimitives_2Writes(NetworkStream ns, byte[] payload, CancellationToken ct)
+{
+    var lenBuf = new byte[4];
+    BinaryPrimitives.WriteInt32LittleEndian(lenBuf, payload.Length);
+
+    await ns.WriteAsync(lenBuf, 0, 4, ct);
+    await ns.WriteAsync(payload, 0, payload.Length, ct);
+}
+```
+
+✅ 明示的 Little-Endian
+✅ 配列再利用で GC 負荷小
+✅ コピーなし・最もバランス良い
+
+---
+
+## 2️⃣ BinaryPrimitives × 1回 Write（結合）
+
+```csharp
+using System.Buffers.Binary;
+
+public static async Task Send_BinaryPrimitives_1Write(NetworkStream ns, byte[] payload, CancellationToken ct)
+{
+    var buf = new byte[4 + payload.Length];
+    BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(0, 4), payload.Length);
+    Buffer.BlockCopy(payload, 0, buf, 4, payload.Length);
+
+    await ns.WriteAsync(buf, 0, buf.Length, ct);
+}
+```
+
+✅ 結果は同じ
+⚠️ 一時バッファ確保＋payloadコピーが発生（大容量に不向き）
+
+---
+
+## 3️⃣ BitConverter × 2回 Write
+
+```csharp
+public static async Task Send_BitConverter_2Writes(NetworkStream ns, byte[] payload, CancellationToken ct)
+{
+    var len = BitConverter.GetBytes(payload.Length);
+    if (!BitConverter.IsLittleEndian) Array.Reverse(len); // LE化
+
+    await ns.WriteAsync(len, 0, len.Length, ct);
+    await ns.WriteAsync(payload, 0, payload.Length, ct);
+}
+```
+
+✅ シンプルで理解しやすい
+⚠️ Big-Endian環境では Reverse 必須
+⚠️ `GetBytes` が毎回配列確保（微GC）
+
+---
+
+## 4️⃣ BitConverter × 1回 Write（結合）
+
+```csharp
+public static async Task Send_BitConverter_1Write(NetworkStream ns, byte[] payload, CancellationToken ct)
+{
+    var buf = new byte[4 + payload.Length];
+    var len = BitConverter.GetBytes(payload.Length);
+    if (!BitConverter.IsLittleEndian) Array.Reverse(len);
+
+    Buffer.BlockCopy(len, 0, buf, 0, 4);
+    Buffer.BlockCopy(payload, 0, buf, 4, payload.Length);
+
+    await ns.WriteAsync(buf, 0, buf.Length, ct);
+}
+```
+
+✅ 結果は同一
+⚠️ 長さ配列＋結合バッファ両方確保
+⚠️ パフォーマンス的には BinaryPrimitives より劣る
+
+---
+
+## 5️⃣ Socket.SendAsync（複数バッファ一括送信：.NET 8+）
+
+```csharp
+using System.Buffers.Binary;
+using System.Net.Sockets;
+
+public static async Task Send_Socket_GatherWrite(Socket socket, byte[] payload, CancellationToken ct)
+{
+    var lenBuf = new byte[4];
+    BinaryPrimitives.WriteInt32LittleEndian(lenBuf, payload.Length);
+
+    var buffers = new ReadOnlyMemory<byte>[]
+    {
+        lenBuf,
+        payload
+    };
+
+    await socket.SendAsync(buffers, SocketFlags.None, ct);
+}
+```
+
+✅ コピーなしで1回送信
+✅ 最速だが `NetworkStream` では不可（Socket直接利用時専用）
+⚠️ .NET 8以降でサポート
+
+---
+
+## ⚖️ 比較まとめ
+
+| 方法                    | Write回数 | 余分な配列確保   | エンディアン明示   | コピー有無 | 適用範囲          | 備考            |
+| --------------------- | ------- | --------- | ---------- | ----- | ------------- | ------------- |
+| BinaryPrimitives × 2回 | 2       | lenBufのみ  | ✅ 明示Little | ❌ 無し  | NetworkStream | **推奨：バランス最良** |
+| BinaryPrimitives × 1回 | 1       | 4+payload | ✅ 明示Little | ⚠️ 有り | NetworkStream | 小サイズで簡潔にしたい時  |
+| BitConverter × 2回     | 2       | len配列毎回   | ⚠️ 環境依存    | ❌ 無し  | NetworkStream | 簡潔だがLE化必要     |
+| BitConverter × 1回     | 1       | len＋結合buf | ⚠️ 環境依存    | ⚠️ 有り | NetworkStream | 手軽だが非効率       |
+| Socket.SendAsync      | 1       | lenBufのみ  | ✅ 明示Little | ❌ 無し  | Socket直       | **最速・最少コピー**  |
+
+---
+
+## ✅ 総評
+
+| 評価軸           | ベスト選択                         | コメント                  |
+| ------------- | ----------------------------- | --------------------- |
+| **移植性・正確性**   | 🥇 BinaryPrimitives           | 明示Little-Endianで環境非依存 |
+| **パフォーマンス**   | 🥇 Socket.SendAsync (.NET 8+) | コピーゼロ・単一送信            |
+| **メモリ効率**     | 🥇 BinaryPrimitives × 2回      | GC負荷最小（lenBuf再利用）     |
+| **シンプルさ**     | 🥇 BitConverter × 2回          | 分かりやすいがGC面では劣る        |
+| **1回送信したい場合** | BinaryPrimitives × 1回         | シンプルにまとまるがコピーあり       |
+
+---
+
+## 🧪 結果の等価性
+
+すべてのパターンで、ネットワーク上に送られるデータは同一：
+
+```
+[length:4bytes LittleEndian][payload:nbytes]
+```
+
+つまり、**受信側の処理は共通で問題なし**です。
+
+---
+
+> 💡実務でのおすすめ：
+>
+> * 通常用途 → **BinaryPrimitives × 2回 Write**
+> * 高性能Socket処理（.NET 8以降）→ **Socket.SendAsync**
+> * 簡易ツール・小テスト → **BitConverter × 2回 Write**
+
+---
